@@ -1,0 +1,466 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Hoja de Partes — HTML</title>
+
+  <!-- jsPDF & autotable (para generar PDF similar a reportlab) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.28/jspdf.plugin.autotable.min.js"></script>
+
+  <style>
+    :root{
+      --gap:8px;
+      --bg: #ffffff;
+      --fg: #000000;
+      --panel-pad:10px;
+      --label-width:120px;
+      --day-input-width:72px;
+      --empleado-row-height:44px;
+      --font-family: Arial, Helvetica, sans-serif;
+    }
+    html,body{
+      height:100%;
+      margin:0;
+      font-family:var(--font-family);
+      background:var(--bg);
+      color:var(--fg);
+    }
+    .app{
+      box-sizing:border-box;
+      padding:12px;
+      display:flex;
+      flex-direction:column;
+      gap:12px;
+      max-width:1200px;
+      margin:12px auto;
+    }
+
+    /* fila mes */
+    .fila-mes{ display:flex; gap:8px; align-items:center; height:44px; }
+    .fila-mes label{ width:60px; }
+    .fila-mes input{ flex:1; padding:8px; border:1px solid #ccc; border-radius:4px; }
+
+    /* cabecera con dias e inputs encima*/
+    .cabecera{ display:flex; align-items:center; gap:6px; height:56px; }
+    .cabecera .nombre-col{ width:20%; min-width:120px; text-align:left; font-weight:600; padding-left:4px;}
+    .dia-col{
+      display:flex; flex-direction:column; align-items:center; justify-content:center;
+      width:11%; min-width:72px; box-sizing:border-box;
+    }
+    .dia-col .dia-label{ font-size:12px; margin-bottom:4px; text-align:center; }
+    .dia-col input{ width:90%; padding:6px; border:1px solid #ccc; border-radius:4px; text-align:center; }
+
+    /* scroll empleados */
+    .empleados-wrap{ border:1px solid #ddd; border-radius:6px; padding:8px; height:220px; overflow:auto; background:#fff; }
+    .empleado-row{
+      display:flex; gap:6px; align-items:center; height:var(--empleado-row-height); margin-bottom:6px;
+    }
+    .empleado-row input[type="text"]{ padding:6px; border:1px solid #ccc; border-radius:4px; }
+    .empleado-row .nombre{ width:20%; min-width:120px; }
+    .empleado-row .hora{ width:11%; min-width:64px; text-align:center; }
+
+    /* botones */
+    .botones{ display:flex; gap:8px; }
+    button{
+      padding:10px 12px;
+      border-radius:6px;
+      border:1px solid #bbb;
+      background:#fff;
+      cursor:pointer;
+    }
+
+    /* Trabajo realizado */
+    .trabajo-list{ display:flex; flex-direction:column; gap:8px; }
+    .trabajo-item{ display:flex; gap:8px; align-items:flex-start; }
+    .trabajo-item label{ width:120px; padding-top:6px; }
+    .trabajo-item textarea{ flex:1; min-height:56px; padding:8px; border:1px solid #ccc; border-radius:6px; resize:vertical; }
+
+    /* helpers */
+    .small{ font-size:13px; color:#333; }
+    .center{ text-align:center; }
+    @media (max-width:900px){
+      .dia-col{ width:12%; }
+      .empleado-row .hora{ width:12%; }
+      .cabecera .nombre-col{ width:28%; }
+      .empleado-row .nombre{ width:28%; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app" id="app">
+    <!-- Mes -->
+    <div class="fila-mes">
+      <label for="mes">Mes:</label>
+      <input id="mes" placeholder="Introduce el mes" />
+    </div>
+
+    <!-- Cabecera dias -->
+    <div class="cabecera" id="cabecera">
+      <div class="nombre-col">Nombre</div>
+      <!-- Columnas días generadas por JS -->
+    </div>
+
+    <!-- Empleados (scroll) -->
+    <div class="empleados-wrap" id="empleadosWrap"></div>
+
+    <!-- Botones empleados -->
+    <div class="botones">
+      <button id="btnAdd">Añadir empleado</button>
+      <button id="btnRemove">Quitar empleado</button>
+      <button id="btnReset">Resetear</button>
+    </div>
+
+    <!-- Trabajo realizado -->
+    <div>
+      <div style="margin-bottom:6px; font-weight:600;">Trabajo realizado:</div>
+      <div class="trabajo-list" id="trabajoList"></div>
+    </div>
+
+    <!-- Botones PDF -->
+    <div class="botones" style="margin-top:6px;">
+      <button id="btnGuardarPDF">Guardar PDF</button>
+      <button id="btnAbrirPDF">Abrir PDF</button>
+      <button id="btnCompartirPDF">Compartir PDF</button>
+    </div>
+
+    <!-- Mensaje -->
+    <div id="msg" class="small"></div>
+  </div>
+
+<script>
+(function(){
+  // Días en español
+  const dias = ["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado","Domingo"];
+  const app = document.getElementById('app');
+  const cabecera = document.getElementById('cabecera');
+  const empleadosWrap = document.getElementById('empleadosWrap');
+  const trabajoList = document.getElementById('trabajoList');
+  const mesInput = document.getElementById('mes');
+  const msg = document.getElementById('msg');
+
+  let empleados = []; // array de {nombre: input, horas: [inputs]}
+  let inputsDias = []; // inputs al lado de los días
+  let inputsTrabajo = []; // textarea por día
+  let ultimoPdfBlob = null;
+  let ultimoPdfUrl = null;
+
+  // --- Construcción de la cabecera (dias y sus inputs) ---
+  dias.forEach(dia => {
+    const col = document.createElement('div');
+    col.className = 'dia-col';
+    const lbl = document.createElement('div');
+    lbl.className = 'dia-label';
+    lbl.textContent = dia;
+    const inp = document.createElement('input');
+    inp.type = 'text';
+    inp.placeholder = 'Día';
+    inp.addEventListener('input', guardarDatos);
+    inputsDias.push(inp);
+    col.appendChild(lbl);
+    col.appendChild(inp);
+    cabecera.appendChild(col);
+  });
+
+  // --- Trabajo realizado por día ---
+  dias.forEach(dia => {
+    const fila = document.createElement('div');
+    fila.className = 'trabajo-item';
+    const label = document.createElement('label');
+    label.textContent = dia + ':';
+    const ta = document.createElement('textarea');
+    ta.placeholder = 'Descripción';
+    ta.addEventListener('input', guardarDatos);
+    inputsTrabajo.push(ta);
+    fila.appendChild(label);
+    fila.appendChild(ta);
+    trabajoList.appendChild(fila);
+  });
+
+  // --- Funciones empleados ---
+  function agregarEmpleado(nombreVal = '', horasVals = []) {
+    const fila = document.createElement('div');
+    fila.className = 'empleado-row';
+
+    const nombre = document.createElement('input');
+    nombre.type = 'text';
+    nombre.className = 'nombre';
+    nombre.placeholder = 'Nombre';
+    nombre.value = nombreVal;
+    nombre.addEventListener('input', guardarDatos);
+    fila.appendChild(nombre);
+
+    const horasInputs = [];
+    for (let i = 0; i < dias.length; i++) {
+      const hora = document.createElement('input');
+      hora.type = 'text';
+      hora.className = 'hora';
+      hora.placeholder = 'Horas';
+      hora.value = horasVals[i] || '';
+      hora.addEventListener('input', guardarDatos);
+      fila.appendChild(hora);
+      horasInputs.push(hora);
+    }
+
+    empleadosWrap.appendChild(fila);
+    empleados.push({ nombre, horas: horasInputs });
+    guardarDatos();
+  }
+
+  function quitarEmpleado() {
+    if (empleados.length > 0) {
+      const ultimo = empleados.pop();
+      empleadosWrap.removeChild(ultimo.nombre.parentElement);
+      guardarDatos();
+    }
+  }
+
+  function resetear() {
+    mesInput.value = '';
+    inputsDias.forEach(i => i.value = '');
+    // Vaciar empleados del DOM y array
+    empleados.forEach(e => {
+      if (e.nombre && e.nombre.parentElement) {
+        empleadosWrap.removeChild(e.nombre.parentElement);
+      }
+    });
+    empleados = [];
+    // Añadir 5 filas vacías
+    for (let i = 0; i < 5; i++) agregarEmpleado();
+    // Vaciar trabajo realizado
+    inputsTrabajo.forEach(t => t.value = '');
+    guardarDatos();
+  }
+
+  // --- Guardado / Carga (localStorage) ---
+  function guardarDatos() {
+    const datos = {
+      mes: mesInput.value,
+      dias: inputsDias.map(i => i.value),
+      empleados: empleados.map(e => ({ nombre: e.nombre.value, horas: e.horas.map(h => h.value) })),
+      trabajo: inputsTrabajo.map(t => t.value)
+    };
+    localStorage.setItem('hoja_partes', JSON.stringify(datos));
+  }
+
+  function cargarDatos() {
+    const raw = localStorage.getItem('hoja_partes');
+    if (!raw) {
+      // si no hay datos, crear 5 empleados por defecto
+      for (let i = 0; i < 5; i++) agregarEmpleado();
+      return;
+    }
+    const datos = JSON.parse(raw);
+    // limpiar empleados actuales
+    empleados.forEach(e => {
+      if (e.nombre && e.nombre.parentElement) empleadosWrap.removeChild(e.nombre.parentElement);
+    });
+    empleados = [];
+    mesInput.value = datos.mes || '';
+    (datos.dias || []).forEach((v, idx) => { if (inputsDias[idx]) inputsDias[idx].value = v; });
+    (datos.empleados || []).forEach(emp => agregarEmpleado(emp.nombre || '', emp.horas || []));
+    // si no hay empleados en datos, añadir 5 por defecto
+    if ((datos.empleados || []).length === 0) for (let i = 0; i < 5; i++) agregarEmpleado();
+    (datos.trabajo || []).forEach((t, idx) => { if (inputsTrabajo[idx]) inputsTrabajo[idx].value = t; });
+  }
+
+  // --- PDF (jsPDF + autotable), similar a reportlab output ---
+  async function guardarPDF() {
+    guardarDatos(); // asegúrate de guardar antes
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ unit: 'pt', format: 'a4' });
+    const leftMargin = 40;
+    let y = 40;
+
+    // Cabecera empresa (estilos simples)
+    doc.setFontSize(18);
+    doc.text("AISLAMIENTOS ALTE S.L.", leftMargin, y);
+    y += 20;
+    doc.setFontSize(10);
+    doc.text("B-64597339", leftMargin, y); y += 14;
+    doc.text("C/ BOGATELL N.87 LOCAL 3", leftMargin, y); y += 14;
+    doc.text("SANT ADRIA DEL BESOS", leftMargin, y); y += 14;
+    doc.text("08930 BARCELONA", leftMargin, y); y += 14;
+    doc.text("TEL. 93 462 76 82", leftMargin, y); y += 18;
+
+    // Título y mes
+    doc.setFontSize(14);
+    doc.text("Resumen de Horas Semanales", leftMargin, y); y += 18;
+    doc.setFontSize(11);
+    doc.text("Mes: " + (mesInput.value || "-"), leftMargin, y); y += 18;
+
+    // Preparar tabla (encabezado)
+    const encabezados = ["Nombre"].concat(inputsDias.map((inp, idx) => {
+      const valor = inp.value && inp.value.trim() ? inp.value.trim() : "-";
+      return dias[idx] + " " + valor;
+    }));
+
+    const body = empleados
+      .filter(e => e.nombre.value && e.nombre.value.trim())
+      .map(e => [ e.nombre.value.trim() ].concat(e.horas.map(h => (h.value && h.value.trim()) ? h.value.trim() : "-")));
+
+    if (body.length === 0) {
+      // si no hay nombres rellenos, mostrar filas vacías (mantener estructura similar)
+      for (let i = 0; i < 5; i++) {
+        body.push(["-"].concat(new Array(dias.length).fill("-")));
+      }
+    }
+
+    // Usar autoTable para la tabla
+    doc.autoTable({
+      startY: y,
+      head: [encabezados],
+      body: body,
+      theme: 'grid',
+      styles: { fontSize: 9, cellPadding: 4 },
+      headStyles: { fillColor: [230,230,230], textColor: [0,0,0] },
+      margin: { left: leftMargin, right: 40 },
+      didDrawPage: function (data) {}
+    });
+
+    y = doc.lastAutoTable ? doc.lastAutoTable.finalY + 18 : y + 140;
+
+    // Trabajo realizado
+    doc.setFontSize(12);
+    doc.text("Trabajo realizado:", leftMargin, y); y += 16;
+    doc.setFontSize(10);
+    inputsTrabajo.forEach((ta, idx) => {
+      const texto = (ta.value && ta.value.trim()) ? ta.value.trim() : "-";
+      // Para evitar líneas muy largas, usar splitTextToSize
+      const lines = doc.splitTextToSize(dias[idx] + ": " + texto, 500);
+      doc.text(lines, leftMargin, y);
+      y += lines.length * 12 + 6;
+      if (y > 760) { doc.addPage(); y = 40; }
+    });
+
+    // Generar blob y guardar
+    const fecha = new Date();
+    const yyyymmdd = fecha.getFullYear().toString()
+      + String(fecha.getMonth()+1).padStart(2,'0')
+      + String(fecha.getDate()).padStart(2,'0');
+    const filename = `hoja_partes_${yyyymmdd}.pdf`;
+
+    const pdfBlob = doc.output('blob');
+
+    // guardar blob en memoria para abrir/compartir
+    if (ultimoPdfUrl) {
+      URL.revokeObjectURL(ultimoPdfUrl);
+      ultimoPdfUrl = null;
+    }
+    ultimoPdfBlob = pdfBlob;
+    ultimoPdfUrl = URL.createObjectURL(pdfBlob);
+
+    // descargar automáticamente (simula "guardar")
+    const a = document.createElement('a');
+    a.href = ultimoPdfUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+
+    showMsg(`✅ PDF guardado como ${filename}`);
+  }
+
+  function abrirPDF() {
+    if (!ultimoPdfUrl && localStorage.getItem('last_pdf')) {
+      // si hay un pdf guardado en localStorage (base64), crear URL
+      try {
+        const base64 = localStorage.getItem('last_pdf');
+        if (base64) {
+          const byteString = atob(base64.split(',')[1]);
+          const ab = new ArrayBuffer(byteString.length);
+          const ia = new Uint8Array(ab);
+          for (let i = 0; i < byteString.length; i++) ia[i] = byteString.charCodeAt(i);
+          const blob = new Blob([ab], { type: 'application/pdf' });
+          if (ultimoPdfUrl) URL.revokeObjectURL(ultimoPdfUrl);
+          ultimoPdfBlob = blob;
+          ultimoPdfUrl = URL.createObjectURL(blob);
+        }
+      } catch(e){}
+    }
+    if (!ultimoPdfUrl) {
+      showMsg("Primero guarda un PDF.");
+      return;
+    }
+    window.open(ultimoPdfUrl, '_blank');
+  }
+
+  async function compartirPDF() {
+    // Intentar usar Web Share API con archivos
+    if (!ultimoPdfBlob) {
+      showMsg("Primero guarda un PDF para poder compartirlo.");
+      return;
+    }
+
+    // En navegadores que soportan navigator.share con archivos (Android Chrome)
+    if (navigator.canShare && navigator.canShare({ files: [new File([ultimoPdfBlob], 'hoja_partes.pdf', {type:'application/pdf'})] })) {
+      try {
+        const file = new File([ultimoPdfBlob], `hoja_partes.pdf`, { type: 'application/pdf' });
+        await navigator.share({
+          title: 'Hoja de partes',
+          text: 'Te envío el PDF de la hoja de partes.',
+          files: [file]
+        });
+        showMsg('Compartido correctamente.');
+      } catch (err) {
+        showMsg('No se pudo compartir mediante Web Share API: ' + err);
+      }
+    } else if (navigator.share && navigator.share.toString().includes('native')) {
+      // Fallback genérico, intentar compartir solo texto/URL
+      try {
+        await navigator.share({ title: 'Hoja de partes', text: 'He generado un PDF. Descárgalo desde la app.' });
+        showMsg('Compartido (texto).');
+      } catch (err) {
+        showMsg('No se pudo compartir: ' + err);
+      }
+    } else {
+      // Si no soporta, ofrecer descargar o mostrar ruta
+      showMsg('El navegador no soporta compartir archivos. Puedes descargar el PDF y compartirlo manualmente.');
+      // también abrir el pdf para que el usuario pueda guardarlo
+      if (ultimoPdfUrl) window.open(ultimoPdfUrl, '_blank');
+    }
+  }
+
+  // Mensajes en pantalla
+  function showMsg(text) {
+    msg.textContent = text;
+    setTimeout(() => { if (msg.textContent === text) msg.textContent = ''; }, 6000);
+  }
+
+  // --- Eventos botones ---
+  document.getElementById('btnAdd').addEventListener('click', () => agregarEmpleado());
+  document.getElementById('btnRemove').addEventListener('click', () => quitarEmpleado());
+  document.getElementById('btnReset').addEventListener('click', () => resetear());
+  document.getElementById('btnGuardarPDF').addEventListener('click', async () => {
+    await guardarPDF();
+    // también guardamos el último pdf en localStorage en base64 (para abrir después si fuera necesario)
+    if (ultimoPdfBlob) {
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        try {
+          localStorage.setItem('last_pdf', e.target.result);
+        } catch (err) {
+          // localStorage puede fallar por tamaño, ignoramos
+        }
+      };
+      reader.readAsDataURL(ultimoPdfBlob);
+    }
+  });
+  
+  document.getElementById('btnAbrirPDF').addEventListener('click', () => abrirPDF());
+  document.getElementById('btnCompartirPDF').addEventListener('click', () => compartirPDF());
+
+  // Guardar datos cuando cambien inputs principales
+  mesInput.addEventListener('input', guardarDatos);
+
+  // Inicializar (cargar datos)
+  cargarDatos();
+
+  // Asegurarnos de que inputsDias e inputsTrabajo que fueron creados tienen listeners (ya añadidos al crear)
+  // (empleados se añaden en cargarDatos/add)
+})();
+</script>
+</body>
+</html>
+         
